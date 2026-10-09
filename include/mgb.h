@@ -41,6 +41,27 @@ typedef struct mgb_session mgb_session_t;
 /* Spawn `s2tui_path` with piped stdin/stdout, handshake the banner.
  * Returns NULL on any failure (bad path, no banner, timeout). Stderr of
  * the child is captured to a temp file for forensics (never parsed). */
+/* Why a spawn failed. Every one of these used to collapse into a bare NULL,
+ * so the caller had to GUESS between "no such file", "not executable" and
+ * "s2tui never answered" — three unrelated problems, one indistinguishable
+ * result. `mgb_spawn_reason` reports the true cause and `*why_errno` the
+ * OS errno when one applies (e.g. ENOENT, EACCES, ENOEXEC). */
+typedef enum {
+    mgb_spawn_ok = 0,
+    mgb_spawn_e_no_path,   /* NULL/empty path */
+    mgb_spawn_e_pipe,      /* pipe() failed */
+    mgb_spawn_e_fork,      /* fork() failed */
+    mgb_spawn_e_notfound,  /* no such file/dir at that path */
+    mgb_spawn_e_noexec,    /* exec failed: see errno (ENOEXEC, ETXTBSY, ...) */
+    mgb_spawn_e_noexecbit, /* file is not executable (no exec permission) */
+    mgb_spawn_e_handshake, /* s2tui ran but never sent the expected banner/prompt */
+    mgb_spawn_e_alloc      /* out of memory */
+} mgb_spawn_status_t;
+const char *mgb_spawn_strerror (mgb_spawn_status_t st);
+/* Last spawn failure on this thread, for diagnostics after a NULL return.
+ * Thread-local, so a concurrent spawn elsewhere cannot overwrite it before
+ * the caller reads it. */
+mgb_spawn_status_t mgb_spawn_reason (int *why_errno);
 mgb_session_t *mgb_spawn (const char *s2tui_path, int timeout_sec);
 /* Send one shell line, wait for the next `s2>` prompt. 0 ok, -1 dead. */
 int mgb_cmd (mgb_session_t *s, const char *line, int timeout_sec);

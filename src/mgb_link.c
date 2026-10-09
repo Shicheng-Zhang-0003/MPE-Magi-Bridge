@@ -121,12 +121,56 @@ static long mgb_read_prompt (mgb_session_t *s, FILE *log, char **keep,
     return (long)len;
 }
 
+/* Thread-local last failure: mgb_spawn still returns NULL for every cause
+ * (callers rely on that), and the reason travels beside it. */
+static _Thread_local mgb_spawn_status_t g_spawn_status = mgb_spawn_ok;
+static _Thread_local int g_spawn_errno = 0;
+const char *mgb_spawn_strerror (mgb_spawn_status_t st) {
+    switch (st) {
+        case mgb_spawn_ok: return ("ok");
+        case mgb_spawn_e_no_path: return ("empty path");
+        case mgb_spawn_e_pipe: return ("pipe() failed");
+        case mgb_spawn_e_fork: return ("fork() failed");
+        case mgb_spawn_e_notfound: return ("no such file");
+        case mgb_spawn_e_noexec: return ("exec() failed");
+        case mgb_spawn_e_noexecbit: return ("file exists but is not executable");
+        case mgb_spawn_e_handshake: return ("s2tui started but never sent the expected banner/prompt");
+        case mgb_spawn_e_alloc: return ("out of memory");
+        default: return ("unknown spawn failure");
+    }
+}
+mgb_spawn_status_t mgb_spawn_reason (int *why_errno) {
+    if (why_errno) *why_errno = g_spawn_errno;
+    return (g_spawn_status);
+}
+static int fail_spawn (mgb_spawn_status_t st, int e) {
+    g_spawn_status = st;
+    g_spawn_errno = e;
+    return 0;
+}
 mgb_session_t *mgb_spawn (const char *s2tui_path, int timeout_sec) {
-    if (!s2tui_path || !*s2tui_path) return NULL;
+    if (!s2tui_path || !*s2tui_path) { fail_spawn (mgb_spawn_e_no_path, 0); return NULL; }
     if (timeout_sec <= 0) timeout_sec = 15;
+    /* Executable bit first. fopen-style "can I read it" checks pass for a
+     * non-executable file and then exec fails with a bare 127 exit, which is
+     * exactly the case that used to be indistinguishable from a timeout. */
+    if (access (s2tui_path, X_OK) != 0) {
+        mgb_spawn_status_t st = mgb_spawn_e_noexec;
+        if (errno == EACCES) st = mgb_spawn_e_noexecbit;
+        else if (errno == ENOENT || errno == ENOTDIR) st = mgb_spawn_e_notfound;
+        fail_spawn (st, errno);
+        return NULL;
+    }
+    g_spawn_status = mgb_spawn_ok;
+    g_spawn_errno = 0;
     int to_c[2], out_c[2], err_c[2];
     if (pipe (to_c) != 0 || pipe (out_c) != 0 || pipe (err_c) != 0)
-        return NULL;
+        { fail_spawn (mgb_spawn_e_pipe, errno); return NULL; }
+    /* Exec-status channel: the child writes errno here if execl fails, so
+     * "exec failed: ENOENT" is reported instead of the child vanishing. */
+    int exec_err[2];
+    if (pipe (exec_err) != 0) { fail_spawn (mgb_spawn_e_pipe, errno); return NULL; }
+    fcntl (exec_err[1], F_SETFD, FD_CLOEXEC);
     pid_t pid = fork ();
     if (pid < 0) {
         close (to_c[0]); close (to_c[1]);
@@ -142,9 +186,10 @@ mgb_session_t *mgb_spawn (const char *s2tui_path, int timeout_sec) {
         close (out_c[0]); close (out_c[1]);
         close (err_c[0]); close (err_c[1]);
         execl (s2tui_path, "s2tui", (char *)NULL);
+        { int e = errno; ssize_t w = write (exec_err[1], &e, sizeof e); (void) w; }
         _exit (127);
     }
-    close (to_c[0]); close (out_c[1]); close (err_c[1]);
+    close (to_c[0]); close (out_c[1]); close (err_c[1]); close (exec_err[1]);
     set_nonblock (out_c[0]);
     mgb_session_t *s = calloc (1, sizeof *s);
     if (!s) {
@@ -172,11 +217,38 @@ mgb_session_t *mgb_spawn (const char *s2tui_path, int timeout_sec) {
     /* Did exec actually succeed? The CLOEXEC pipe closes with EOF on a good
      * exec and carries the real errno on a bad one. Non-blocking so a
      * successful exec (EOF immediately) never stalls the handshake. */
+    int exec_errno = 0;
+    {
+        /* Race-free by construction. On a SUCCESSFUL exec the CLOEXEC write
+         * end closes, so poll() reports POLLHUP and read() returns 0 at once.
+         * On a FAILED exec the child writes errno and poll() reports
+         * POLLIN. An earlier non-blocking read raced the child and turned
+         * every exec failure into a bogus "handshake timeout" — the same
+         * misdiagnosis this whole change exists to remove. The timeout only
+         * guards a child that dies between fork and exec, where neither
+         * event ever fires. */
+        struct pollfd pfd;
+        pfd.fd = exec_err[0];
+        pfd.events = POLLIN;
+        pfd.revents = 0;
+        if (poll (&pfd, 1, 500) > 0 && (pfd.revents & POLLIN)) {
+            int e = 0;
+            if (read (exec_err[0], &e, sizeof e) == (ssize_t) sizeof e) exec_errno = e;
+        }
+        close (exec_err[0]);
+    }
+    if (exec_errno != 0) {
+        if (log) fclose (log);
+        fail_spawn (mgb_spawn_e_noexec, exec_errno);
+        mgb_close (s);
+        return NULL;
+    }
     /* handshake: banner (identity) + first prompt, both on stderr */
     char *banner = NULL;
     long n = mgb_read_prompt (s, log, &banner, timeout_sec);
     if (log) fclose (log);
     int ok = n > 0 && banner && strstr (banner, "s2tui");
+    if (!ok && banner == NULL && n <= 0) fail_spawn (mgb_spawn_e_handshake, 0);
     free (banner);
     if (!ok) { mgb_close (s); return NULL; }
     return s;

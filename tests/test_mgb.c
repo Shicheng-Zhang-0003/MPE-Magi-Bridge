@@ -1,10 +1,13 @@
 /* test_mgb.c — 472-MGB gates: frame parser strictness, mapper policy.
  * Exit 0 all green, 1 any red. Counts printed as `PASS n FAIL m`.
  */
+#define _POSIX_C_SOURCE 200809L /* chmod, ENOENT/EACCES/ENOEXEC, setenv */
 #include "mgb.h"
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <errno.h>
+#include <sys/stat.h>
 
 static int npass = 0, nfail = 0;
 #define CHECK(cond, name) do { \
@@ -128,8 +131,59 @@ int main (void) {
     /* 9: bogus s2tui path fails closed (no hang: short timeout) */
     {
         mgb_session_t *s = mgb_spawn ("/tmp/mgb_t_no_such_binary", 2);
+        int why = 0;
         CHECK (s == NULL, "bogus binary refused");
+        CHECK (mgb_spawn_reason (&why) == mgb_spawn_e_notfound,
+               "bogus binary is NAMED notfound (not a generic failure)");
+        CHECK (why == ENOENT, "bogus binary reports ENOENT");
         mgb_close (s);  /* NULL-safe */
+    }
+
+    /* 10: every spawn failure mode is NAMED, with its own errno.
+     *
+     * These all used to return NULL identically, so the caller had to guess
+     * between "no such file", "no exec bit" and "s2tui never answered" --
+     * three unrelated problems with one indistinguishable result. An
+     * executable check alone is not enough either: a readable but
+     * non-executable file passes it and then dies inside execl. */
+    {
+        int e = 0;
+        /* empty path */
+        CHECK (mgb_spawn ("", 1) == NULL, "empty path refused");
+        CHECK (mgb_spawn_reason (&e) == mgb_spawn_e_no_path, "empty path is named no_path");
+
+        /* no such file */
+        CHECK (mgb_spawn ("/tmp/mgb_t_definitely_absent", 1) == NULL, "absent file refused");
+        CHECK (mgb_spawn_reason (&e) == mgb_spawn_e_notfound, "absent file is named notfound");
+        CHECK (e == ENOENT, "absent file reports ENOENT");
+
+        /* readable but NOT executable */
+        write_tmp ("/tmp/mgb_t_notexec", "not a program\n");
+        if (chmod ("/tmp/mgb_t_notexec", 0644) == 0) {
+            CHECK (mgb_spawn ("/tmp/mgb_t_notexec", 1) == NULL, "non-executable refused");
+            CHECK (mgb_spawn_reason (&e) == mgb_spawn_e_noexecbit, "non-executable is named noexecbit");
+            CHECK (e == EACCES, "non-executable reports EACCES");
+        }
+        remove ("/tmp/mgb_t_notexec");
+
+        /* executable bit set, contents are not a program: exec() itself
+         * must fail, and that ENOEXEC must arrive instead of a bogus
+         * "handshake timeout" */
+        write_tmp ("/tmp/mgb_t_noexec", "still not a program\n");
+        if (chmod ("/tmp/mgb_t_noexec", 0755) == 0) {
+            CHECK (mgb_spawn ("/tmp/mgb_t_noexec", 2) == NULL, "bad exec format refused");
+            CHECK (mgb_spawn_reason (&e) == mgb_spawn_e_noexec, "bad exec format is named noexec");
+            CHECK (e == ENOEXEC, "bad exec format reports ENOEXEC");
+        }
+        remove ("/tmp/mgb_t_noexec");
+
+        /* strerror must never collapse: distinct causes, distinct text. */
+        CHECK (strcmp (mgb_spawn_strerror (mgb_spawn_e_notfound), mgb_spawn_strerror (mgb_spawn_e_noexecbit)) != 0,
+               "notfound and noexecbit read differently");
+        CHECK (strcmp (mgb_spawn_strerror (mgb_spawn_e_noexec), mgb_spawn_strerror (mgb_spawn_e_handshake)) != 0,
+               "noexec and handshake read differently");
+        CHECK (strcmp (mgb_spawn_strerror (mgb_spawn_e_no_path), mgb_spawn_strerror (mgb_spawn_ok)) != 0,
+               "no_path and ok read differently");
     }
 
     remove (p_good);

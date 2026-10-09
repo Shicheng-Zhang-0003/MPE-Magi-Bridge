@@ -1,0 +1,11 @@
+# build output
+build/
+
+# probe artifacts (make probe writes these next to the binary)
+probe_petri.mgb
+probe_petri.s2
+
+# editor / OS noise
+*.swp
+*~
+.DS_Store

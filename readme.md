@@ -19,7 +19,8 @@ The bridge core is complete and gated; the MPE-side integration is live in
 - `mgb_spawn/cmd/snapshot/close` own the child with handshake, prompt
   framing, timeouts, and fail-closed teardown (no half frames, ever).
 - `mgb_frame_parse` reads S2SAVE1 strictly: bad magic, truncation,
-  out-of-bounds bonds and trailing garbage are all rejected.
+  out-of-bounds bonds, trailing garbage, and non-physical parameters
+  (dt<=0, cutoff<=0, temp<0, tau<=0, nu<0) are all rejected.
 - `mgb_map` owns the **only** scale (`mm_per_a`, default 1.0: 1 Å → 1 unit —
   large on purpose; a 48 Å dish becomes 48 units). Display-only, labeled on
   every artifact, inverts exactly.
@@ -27,6 +28,11 @@ The bridge core is complete and gated; the MPE-side integration is live in
   which documents the copy-time contract (static bodies, stable ids,
   zero-force joint lines, no physics writes, health section,
   `deterministic=false`).
+- **Physical validation**: the frame parser enforces hard physical
+  constraints — timestep must be positive, cutoff must be positive,
+  temperature must be non-negative (Kelvin), coupling time must be
+  positive, collision frequency must be non-negative. A frame violating
+  any of these is rejected, not repaired.
 
 ### Failure reporting (this tree and the 475 copy)
 The bridge never reports a bare "it didn't work". Each rejection names
@@ -34,9 +40,13 @@ itself:
 
 - **`mgb_spawn` returns a status plus the OS errno.** Previously every
   failure — empty path, missing file, missing exec bit, bad exec format,
-  resource exhaustion, and a child that ran but stayed silent — collapsed
-  into one `NULL`, so callers had to *guess* between them. Use
-  `mgb_spawn_reason (int *why_errno)`; `mgb_spawn_strerror` gives the text.
+  resource exhaustion, fork failure, allocation failure, and a child that
+  ran but stayed silent — collapsed into one `NULL`, so callers had to
+  *guess* between them. Use `mgb_spawn_reason (int *why_errno)`;
+  `mgb_spawn_strerror` gives the text. All eight failure modes are now
+  named: `mgb_spawn_e_no_path`, `mgb_spawn_e_pipe`, `mgb_spawn_e_fork`,
+  `mgb_spawn_e_notfound`, `mgb_spawn_e_noexec`, `mgb_spawn_e_noexecbit`,
+  `mgb_spawn_e_handshake`, `mgb_spawn_e_alloc`.
 - **`exec` failures carry the real errno.** The child writes errno through a
   `CLOEXEC` status pipe read with `poll()`. A non-blocking read races the
   child and turns every exec failure into a bogus "handshake timeout".
@@ -45,11 +55,13 @@ itself:
   directory, else from the working directory. Every candidate is checked
   with `access(X_OK)` and normalised with `realpath`, so a hit is always an
   absolute, canonical, existing executable. A miss stays a miss.
-- **Gated here, not only in the copy.** `make test` (33 checks) pins the
-  parser and mapper contracts *and* the spawn-failure naming: each mode must
-  report its own status and errno, and `mgb_spawn_strerror` must never
-  collapse two causes onto one string. These gates are POSIX-only, which is
-  also the only platform this core builds for.
+- **Gated here, not only in the copy.** `make test` (39 checks) pins the
+  parser and mapper contracts, the spawn-failure naming, and the physical
+  validation: each mode must report its own status and errno,
+  `mgb_spawn_strerror` must never collapse two causes onto one string, and
+  non-physical parameters (dt<=0, cutoff<=0, temp<0, tau<=0, nu<0) must be
+  rejected. These gates are POSIX-only, which is also the only platform this
+  core builds for.
 
 > Historical trap, kept as a gate: an earlier revision stripped a *fixed*
 > number of path components, which assumed one exact install depth. Reached

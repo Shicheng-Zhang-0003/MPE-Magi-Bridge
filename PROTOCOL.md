@@ -40,7 +40,8 @@ restraints <0..64>                    (5- or 6-col rows; counted in Phase 0)
 ```
 
 All doubles must be finite; bond indices must satisfy `0 <= a,b < natoms`,
-`a != b`. Anything else fails the whole frame.
+`a != b`. Physical parameters must satisfy: `dt > 0`, `cutoff > 0`,
+`temp >= 0`, `tau > 0`, `nu >= 0`. Anything else fails the whole frame.
 
 ## Timeouts / failure modes
 

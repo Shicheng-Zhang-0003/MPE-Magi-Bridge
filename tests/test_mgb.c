@@ -107,6 +107,46 @@ int main (void) {
     CHECK (mgb_frame_parse ("/tmp/mgb_t_no_such_file.s2", &f) != 0,
            "missing file rejected");
 
+    /* 6b: physical validation — non-positive dt rejected */
+    write_tmp (p_bad,
+               "S2SAVE1\nseed 42\n"
+               "dt 0 cutoff 12 dielectric 1 temp 310 thermostat 2 tau 50 nu 0.02\n"
+               "atoms 0\nbonds 0\nrestraints 0\n");
+    memset (&f, 0, sizeof f);
+    CHECK (mgb_frame_parse (p_bad, &f) != 0, "dt=0 rejected");
+
+    /* 6c: physical validation — negative cutoff rejected */
+    write_tmp (p_bad,
+               "S2SAVE1\nseed 42\n"
+               "dt 0.5 cutoff -1 dielectric 1 temp 310 thermostat 2 tau 50 nu 0.02\n"
+               "atoms 0\nbonds 0\nrestraints 0\n");
+    memset (&f, 0, sizeof f);
+    CHECK (mgb_frame_parse (p_bad, &f) != 0, "negative cutoff rejected");
+
+    /* 6d: physical validation — negative temperature rejected */
+    write_tmp (p_bad,
+               "S2SAVE1\nseed 42\n"
+               "dt 0.5 cutoff 12 dielectric 1 temp -1 thermostat 2 tau 50 nu 0.02\n"
+               "atoms 0\nbonds 0\nrestraints 0\n");
+    memset (&f, 0, sizeof f);
+    CHECK (mgb_frame_parse (p_bad, &f) != 0, "negative temperature rejected");
+
+    /* 6e: physical validation — non-positive tau rejected */
+    write_tmp (p_bad,
+               "S2SAVE1\nseed 42\n"
+               "dt 0.5 cutoff 12 dielectric 1 temp 310 thermostat 2 tau 0 nu 0.02\n"
+               "atoms 0\nbonds 0\nrestraints 0\n");
+    memset (&f, 0, sizeof f);
+    CHECK (mgb_frame_parse (p_bad, &f) != 0, "tau=0 rejected");
+
+    /* 6f: physical validation — negative nu rejected */
+    write_tmp (p_bad,
+               "S2SAVE1\nseed 42\n"
+               "dt 0.5 cutoff 12 dielectric 1 temp 310 thermostat 2 tau 50 nu -0.02\n"
+               "atoms 0\nbonds 0\nrestraints 0\n");
+    memset (&f, 0, sizeof f);
+    CHECK (mgb_frame_parse (p_bad, &f) != 0, "negative nu rejected");
+
     /* 7: mapper calls + scale + invertibility */
     write_tmp (p_good, GOOD_FRAME);
     memset (&f, 0, sizeof f);
